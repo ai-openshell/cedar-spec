@@ -62,6 +62,14 @@ public def IsWfSign (s : String) : Prop :=
   s = "-" ∨ s = ""
 -- ANCHOR_END: IsWfSign
 
+/-- Numeric value of a digit field, defaulting to `0` when the string does not parse. On a field
+    satisfying `IsDigits` the default is never taken, so this is exactly the field's value. Shared
+    by the grammars whose value functions read a digit run as a number (decimal's `Natural` and
+    `Fraction`, every numeric field of datetime). -/
+-- ANCHOR: fieldValue
+public def fieldValue (s : String) : Nat := (toNat?' s).getD 0
+-- ANCHOR_END: fieldValue
+
 /-- A digit string contains no `'_'`, so `toInt?'`/`toNat?'` (which reject `'_'`) do not
     short-circuit on it. -/
 theorem no_underscore_of_isDigits {s : String} (h : IsDigits s) : s.contains '_' = false := by

@@ -30,9 +30,11 @@ open Cedar.Spec.Ext
 
 This file contains only the grammar-level definitions — the well-formedness predicates and the
 value function — as a direct, parser-independent transcription of the decimal grammar. Each
-production becomes a predicate, and `IsWfDecimal` says the string is their rendering. The lemmas
-connecting these definitions to `Decimal.parse` (in particular the digit-string ↔
-`toInt?'`/`toNat?'` bridges) live in `Cedar.Thm.Ext.Decimal.Lemmas`.
+production becomes a predicate, and `IsDecimalValue s v` says the string `s` is their rendering
+*and* `v` is the value the grammar assigns to it. Both halves of the grammar therefore share a
+single decomposition, and `IsWfDecimal` is just its projection. The lemmas connecting these
+definitions to `Decimal.parse` (in particular the digit-string ↔ `toInt?'`/`toNat?'` bridges) live
+in `Cedar.Thm.Ext.Decimal.Lemmas`.
 
 `Sign ::= ['-']` uses the shared `IsWfSign` predicate. The decimal-specific `Natural` and
 `Fraction` productions are named locally using the shared digit predicates `IsDigits` and
@@ -51,41 +53,50 @@ public def IsWfFrac (s : String) : Prop :=
   IsDigitsUpTo DECIMAL_DIGITS s
 -- ANCHOR_END: IsWfFrac
 
-/-- Well-formed decimal syntax: `s` is the rendering of a well-formed `Sign ::= ['-']`,
-    `Natural ::= Digit⁺`, `'.'`, and `Fraction ::= Digit{1,4}`, concatenated in that order.
-    Phrasing well-formedness existentially over the rendering bakes in the separator and field
-    order without introducing a record for this single flat production. This is a direct
-    transcription of the grammar's character-level productions, independent of any
-    string-to-number parser. -/
--- ANCHOR: IsWfDecimal
-public def IsWfDecimal (s : String) : Prop :=
+/-- The grammar's `sign = -1 if Sign is '-', else 1`. -/
+-- ANCHOR: signValue
+public def signValue (sign : String) : Int := if sign = "-" then -1 else 1
+-- ANCHOR_END: signValue
+
+/-- The grammar's value function, applied to an already-decomposed literal:
+
+      value = sign × (nat(Natural) × 10⁴ + nat(Fraction) × 10^(4 − |Fraction|))
+
+    `IsWfFrac fraction` bounds `fraction.length ≤ DECIMAL_DIGITS`, so the `Nat` subtraction in the
+    second exponent never clamps on a well-formed field. -/
+-- ANCHOR: decimalValue
+public def decimalValue (sign natural fraction : String) : Int :=
+  signValue sign *
+    (fieldValue natural * Int.pow 10 DECIMAL_DIGITS
+     + fieldValue fraction * Int.pow 10 (DECIMAL_DIGITS - fraction.length))
+-- ANCHOR_END: decimalValue
+
+/-- `v` is the value of the decimal literal `s`: `s` is the rendering of a well-formed
+    `Sign ::= ['-']`, `Natural ::= Digit⁺`, `'.'`, and `Fraction ::= Digit{1,4}`, concatenated in
+    that order, and `v` is what the grammar's value function assigns to those fields.
+
+    Phrasing the spec relationally over the rendering bakes in the separator and field order
+    without introducing a record for this single flat production, and lets syntax and value share
+    one decomposition: the existential supplies the split, so no string surgery
+    (`front`/`drop`/`splitToList`) and no `Option` appear here. This is a direct transcription of
+    the grammar's character-level productions, independent of any string-to-number parser.
+
+    The relation is single-valued (`isDecimalValue_unique`), so it does pin down a function. -/
+-- ANCHOR: IsDecimalValue
+public def IsDecimalValue (s : String) (v : Int) : Prop :=
   ∃ sign natural fraction,
     s = sign ++ natural ++ "." ++ fraction ∧
     IsWfSign sign ∧
     IsNatural natural ∧
-    IsWfFrac fraction
+    IsWfFrac fraction ∧
+    v = decimalValue sign natural fraction
+-- ANCHOR_END: IsDecimalValue
+
+/-- Well-formed decimal syntax: `s` has a value. Since the value function is total on the
+    grammar's fields, this says exactly that `s` parses as `Sign Natural '.' Fraction`. -/
+-- ANCHOR: IsWfDecimal
+public def IsWfDecimal (s : String) : Prop := ∃ v, IsDecimalValue s v
 -- ANCHOR_END: IsWfDecimal
-
-/-- Compute the integer value that a decimal string represents, or `none` if its unsigned body
-    does not split into parsable `Natural` and `Fraction` fields. This directly implements the
-    grammar's value function:
-
-      value = sign × (nat(Natural) × 10⁴ + nat(Fraction) × 10^(4 − |Fraction|))
-      where sign = −1 if Sign is '-', else 1
- -/
--- ANCHOR: computeValue
-public def computeValue (s : String) : Option Int :=
-  let (sign, body) :=
-    if s.front = '-' then ((-1 : Int), (s.drop 1).copy) else (1, s)
-  match body.splitToList (· = '.') with
-  | [natural, fraction] =>
-    match toNat?' natural, toNat?' fraction with
-    | some n, some f =>
-      some (sign * (n * Int.pow 10 DECIMAL_DIGITS
-        + f * Int.pow 10 (DECIMAL_DIGITS - fraction.length)))
-    | _, _ => none
-  | _ => none
--- ANCHOR_END: computeValue
 
 /-- Canonical-form normalizer: parse the string and re-serialize.
     Returns `none` for malformed or out-of-range inputs. -/

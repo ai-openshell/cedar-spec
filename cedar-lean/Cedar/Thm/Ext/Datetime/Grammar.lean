@@ -38,12 +38,6 @@ The `Digit⁺` predicate `IsDigits` and its fixed-width refinement `IsFixedDigit
 `Digit{n}`, used for every numeric field here) are shared with the decimal and duration grammars
 and live in `Cedar.Thm.Data.String`. -/
 
-/-- Numeric value of a digit field, defaulting to `0` when the string does not parse. On a field
-    satisfying `IsFixedDigits` the default is never taken, so this is exactly the field's value. -/
--- ANCHOR: fieldValue
-public def fieldValue (s : String) : Nat := (toNat?' s).getD 0
--- ANCHOR_END: fieldValue
-
 /-! ## Numeric constraints
 
 The grammar's `Constraints` block bounds each numeric field. These are pure arithmetic predicates

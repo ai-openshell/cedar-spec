@@ -89,7 +89,7 @@ instead uses fixed-width lowercase hextets and does not elide zero runs.
 
 # Formal Specification
 
-We formalize the validity of an input string by the predicate `IsWfIPNet` (well-formed syntax of the grammar) and the value functions `v4Value`/`v6Value` (the `IPNet` a well-formed string denotes). Unlike the decimal grammar, whose value is a single `Int`, an IP-net's value is an `IPNet`, so soundness and completeness are phrased per witnessing components rather than through a single `computeValue`.
+We formalize the validity of an input string by the predicate `IsWfIPNet` (well-formed syntax of the grammar) and the value functions `v4Value`/`v6Value` (the `IPNet` a well-formed string denotes). Unlike the decimal grammar, whose value is a single `Int` and can therefore be given by one relation `IsDecimalValue s v`, an IP-net's value is an `IPNet`, so soundness and completeness are phrased per witnessing components.
 
 The building block for numeric groups is `IsCanonicalNat`, which captures a non-empty digit string with the grammar's "no leading zeros" rule (`str.startsWith "0" → str = "0"`), building on the shared `IsDigits` predicate:
 

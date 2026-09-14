@@ -63,9 +63,9 @@ A string is _valid_ if and only if it satisfies both the grammar and the constra
 
 # Formal Specification
 
-We formalize the validity of input string by the predicate `IsWfDecimal` (well-formed syntax of the grammar) and the function `computeValue` (value function).
+We formalize the validity of an input string by a single relation, `IsDecimalValue s v`: the string `s` is a rendering of the grammar's productions, and `v` is the value the grammar assigns it. Syntax and value are therefore transcribed once, over one decomposition, rather than as a predicate and a separate function that have to be kept in agreement.
 
-`IsWfDecimal` is a direct transcription of the grammar's character-level productions. The building block is `IsDigits`, which captures `Digit⁺` — a non-empty string all of whose characters satisfy `Char.isDigit`. It lives at the root namespace in `Cedar.Thm.Data.String`, shared with the duration and datetime grammars:
+`IsDecimalValue` is a direct transcription of the grammar's character-level productions. The building block is `IsDigits`, which captures `Digit⁺` — a non-empty string all of whose characters satisfy `Char.isDigit`. It lives at the root namespace in `Cedar.Thm.Data.String`, shared with the duration and datetime grammars:
 
 ```anchor IsDigits (module := Cedar.Thm.Data.String)
 public def IsDigits (s : String) : Prop :=
@@ -101,34 +101,47 @@ public def IsWfFrac (s : String) : Prop :=
   IsDigitsUpTo DECIMAL_DIGITS s
 ```
 
-Well-formedness of the whole string then reads straight off the grammar: the string is the rendering of a `Sign`, a `Natural`, the `'.'` separator, and a `Fraction`, concatenated in that order:
+The value formula is stated over the three fields, with `fieldValue` reading a digit run as a number (also shared, in `Cedar.Thm.Data.String`):
 
-```anchor IsWfDecimal (module := Cedar.Thm.Ext.Decimal.Grammar)
-public def IsWfDecimal (s : String) : Prop :=
+```anchor fieldValue (module := Cedar.Thm.Data.String)
+public def fieldValue (s : String) : Nat := (toNat?' s).getD 0
+```
+
+```anchor signValue (module := Cedar.Thm.Ext.Decimal.Grammar)
+public def signValue (sign : String) : Int := if sign = "-" then -1 else 1
+```
+
+```anchor decimalValue (module := Cedar.Thm.Ext.Decimal.Grammar)
+public def decimalValue (sign natural fraction : String) : Int :=
+  signValue sign *
+    (fieldValue natural * Int.pow 10 DECIMAL_DIGITS
+     + fieldValue fraction * Int.pow 10 (DECIMAL_DIGITS - fraction.length))
+```
+
+The specification of the whole string then reads straight off the grammar: the string is the rendering of a `Sign`, a `Natural`, the `'.'` separator, and a `Fraction`, concatenated in that order, and its value is what those fields denote:
+
+```anchor IsDecimalValue (module := Cedar.Thm.Ext.Decimal.Grammar)
+public def IsDecimalValue (s : String) (v : Int) : Prop :=
   ∃ sign natural fraction,
     s = sign ++ natural ++ "." ++ fraction ∧
     IsWfSign sign ∧
     IsNatural natural ∧
-    IsWfFrac fraction
+    IsWfFrac fraction ∧
+    v = decimalValue sign natural fraction
 ```
 
-This definition talks only about digit characters; it does not mention the string-to-number parsers `toInt?'`/`toNat?'`. That keeps well-formedness faithful to the grammar and independent of the parsing implementation.
+The existential supplies the decomposition, so nothing here splits or slices a string: no `String.front`, no `String.drop`, no `String.splitToList`, and no `Option` for a "the fields did not parse" case. `IsWfFrac fraction` bounds `fraction.length ≤ 4`, so the `4 - |Fraction|` exponent cannot underflow. Beyond `fieldValue`, the definition talks only about digit characters; it does not mention the string-to-number parser `toInt?'` the implementation uses, which keeps the specification independent of the parsing implementation.
 
-`computeValue` follows the grammar's nesting directly. It first peels the outer `Sign`, then uses `String.splitToList` to recover `Natural` and `Fraction` from the unsigned body:
+Well-formed syntax is the projection of the relation:
 
-```anchor computeValue (module := Cedar.Thm.Ext.Decimal.Grammar)
-public def computeValue (s : String) : Option Int :=
-  let (sign, body) :=
-    if s.front = '-' then ((-1 : Int), (s.drop 1).copy) else (1, s)
-  match body.splitToList (· = '.') with
-  | [natural, fraction] =>
-    match toNat?' natural, toNat?' fraction with
-    | some n, some f =>
-      some (sign * (n * Int.pow 10 DECIMAL_DIGITS
-        + f * Int.pow 10 (DECIMAL_DIGITS - fraction.length)))
-    | _, _ => none
-  | _ => none
+```anchor IsWfDecimal (module := Cedar.Thm.Ext.Decimal.Grammar)
+public def IsWfDecimal (s : String) : Prop := ∃ v, IsDecimalValue s v
 ```
+
+Phrasing the value as a relation raises the question of whether it pins down a function at all. It does: a string has at most one value, because the grammar puts exactly one `'.'` in the rendering and a `Natural` cannot begin with `'-'`, so the decomposition a witness supplies is forced.
+
+{docstring isDecimalValue_unique}
+
 # Parser
 
 ```lean -show
@@ -186,15 +199,15 @@ none
 
 The parser is characterized by two complementary guarantees stated in terms of the previous formal definitions.
 
-_Soundness_ says that whenever parsing succeeds, the input was genuinely valid: it is well-formed and `computeValue` yields exactly the returned decimal's value. (The range constraint is implicit — `d.toInt` is always in `Int64` range, since `d` is an `Int64`.)
+_Soundness_ says that whenever parsing succeeds, the input was genuinely valid: the grammar assigns it exactly the returned decimal's value. There is no separate well-formedness conjunct, because `IsDecimalValue` already asserts that the input is a rendering of the grammar's productions. (The range constraint is implicit — `d.toInt` is always in `Int64` range, since `d` is an `Int64`.)
 
 {docstring parse_sound}
 
-_Completeness_ is the converse: every well-formed string whose computed value is `some d.toInt` is accepted as that decimal. (Again the range constraint is implicit — `d.toInt` is always in range.)
+_Completeness_ is the converse: every string the grammar assigns the value `d.toInt` is accepted as that decimal. (Again the range constraint is implicit — `d.toInt` is always in range.)
 
 {docstring parse_complete}
 
-Together they also give a complete characterization of parsing failure — the parser rejects exactly those strings that are malformed or whose computed value overflows the `Int64` range:
+Together they also give a complete characterization of parsing failure — the parser rejects exactly those strings the grammar assigns no value at all, and those whose value overflows the `Int64` range. Because the overflow case exhibits a value, it entails well-formedness, so the two cases are mutually exclusive:
 
 {docstring parse_eq_none_iff}
 
@@ -241,10 +254,10 @@ Parsing the canonical string representation of any decimal recovers the original
 
 {docstring parse_toString_roundtrip}
 
-It is a direct corollary of completeness: canonical strings are just a special case of well-formed inputs, so we only need to check that `toString d` _is_ well-formed and that its computed value is `d.toInt`, then hand both to `parse_complete`.
+It is a direct corollary of completeness: canonical strings are just a special case of valid inputs, so we only need to check that the grammar assigns `toString d` the value `d.toInt`, then hand that to `parse_complete`.
+
+{docstring isDecimalValue_toString}
 
 {docstring toString_isWfDecimal}
-
-{docstring computeValue_toString}
 
 Though only a corollary, roundtrip guards against parser bugs on _valid_ inputs — cases soundness and the failure characterization, aimed at rejecting _invalid_ inputs, never exercise. For example, every decimal in `(-1, 0)` serializes to a `-0.xxxx` string (value `-5000` becomes `"-0.5000"`), so roundtrip must parse these back exactly. An earlier parser derived the sign from the integer part's value, where `int("-0") = 0` dropped the negative and turned `-0.5000` into `+0.5000`. The existence of such a bug would have violated the roundtrip property; in other words, the proof we now have rules it out.
