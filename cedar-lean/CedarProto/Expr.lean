@@ -132,45 +132,92 @@ instance : ProtoEnum Wildcard where
   | 0 => .ok .star
   | n => .error s!"Field {n} does not exist in enum"
 
+/-- Proto enum for `**` (RFC #115). Field 3 in the `Like.PatternElem` message. -/
+inductive MultiWildcard where
+  | starStar
+deriving Inhabited
+
+instance : ProtoEnum MultiWildcard where
+  fromInt
+  | 0 => .ok .starStar
+  | n => .error s!"Field {n} does not exist in enum"
+
+/-- Proto-level pattern element: superset of `Spec.PatElem` that also carries
+    a `multiStar` marker.  A parsed `Like` message chooses between plain
+    `like` and `likeDelimited` at merge time based on presence of `delim`. -/
+inductive RawPatElem where
+  | star
+  | justChar (c : Char)
+  | multiStar    -- `**` — only valid under delimited `like`.
+deriving Inhabited
+
 @[inline]
-def mergeWildcard (_ : PatElem) (x : Wildcard) : PatElem :=
-  -- With enums we perform replacement
+def RawPatElem.mergeWildcard (_ : RawPatElem) (x : Wildcard) : RawPatElem :=
   match x with
   | .star => .star
 
 @[inline]
-def mergeC (_ : PatElem) (x2 : String) : PatElem :=
-  -- With a single character we'll perform replacement
+def RawPatElem.mergeMultiWildcard (_ : RawPatElem) (x : MultiWildcard) : RawPatElem :=
+  match x with
+  | .starStar => .multiStar
+
+@[inline]
+def RawPatElem.mergeC (_ : RawPatElem) (x2 : String) : RawPatElem :=
   match x2.toList with
   | [c2] => .justChar c2
   | _    => panic!("Only expected a single character in PatElem")
 
 @[inline]
-def merge (_ : PatElem) (y : PatElem) : PatElem :=
-  -- Each constructor of the sum type merges through
-  -- replacement, so we'll do the same here
+def RawPatElem.merge (_ : RawPatElem) (y : RawPatElem) : RawPatElem :=
+  -- Each constructor merges through replacement.
   y
 
 @[inline]
-def parseField (t : Proto.Tag) : BParsec (MergeFn PatElem) := do
+def RawPatElem.parseField (t : Proto.Tag) : BParsec (MergeFn RawPatElem) := do
   match t.fieldNum with
   | 1 =>
     let x : Wildcard ← Field.guardedParse t
-    pureMergeFn (mergeWildcard · x)
+    pureMergeFn (RawPatElem.mergeWildcard · x)
   | 2 =>
     let x : String ← Field.guardedParse t
-    pureMergeFn (mergeC · x)
+    pureMergeFn (RawPatElem.mergeC · x)
+  | 3 =>
+    let x : MultiWildcard ← Field.guardedParse t
+    pureMergeFn (RawPatElem.mergeMultiWildcard · x)
   | _ =>
     t.wireType.skip
     pure ignore
 
-instance : Message PatElem where
-  parseField := parseField
-  merge      := merge
+instance : Message RawPatElem where
+  parseField := RawPatElem.parseField
+  merge      := RawPatElem.merge
 
-instance : Field Pattern := Field.fromInterField (λ (elems : Repeated PatElem) => elems.toList) (· ++ ·)
+/-- Convert a raw pattern element to a `Spec.PatElem` for undelimited `like`.
+    `.multiStar` in undelimited context is not legal — the Rust encoder never
+    produces it there.  We panic to catch a corrupt encoding rather than
+    silently forgetting the pattern's meaning. -/
+def RawPatElem.toPatElem : RawPatElem → PatElem
+  | .star       => .star
+  | .justChar c => .justChar c
+  | .multiStar  =>
+    panic!("PatElem.MultiWildcard is only valid in a delimited `like(pattern, delim)` — the outer message must set `delim`")
+
+/-- Convert a raw pattern element to a `Spec.DelimPatElem` for delimited `like`. -/
+def RawPatElem.toDelimPatElem : RawPatElem → DelimPatElem
+  | .star       => .star
+  | .justChar c => .justChar c
+  | .multiStar  => .multiStar
 
 end PatElem
+
+/-- `Field Pattern` — used by `UnaryOp.merge`'s `.like` arm and by the AST
+    equality checks below.  Reads a repeated `RawPatElem` and drops any
+    `multiStar` markers (which are only legal under delimited `like`; the
+    typechecker would reject them here anyway). -/
+instance : Field Pattern :=
+  Field.fromInterField
+    (λ (elems : Repeated PatElem.RawPatElem) => elems.toList.map PatElem.RawPatElem.toPatElem)
+    (· ++ ·)
 
 instance : ProtoEnum UnaryOp where
   fromInt
@@ -229,9 +276,17 @@ def ExprKind.ExtHasAttr := ExprKind
 instance : Inhabited ExprKind.ExtHasAttr where
   default := .extHasAttr default default default
 
-def ExprKind.Like := ExprKind
-instance : Inhabited ExprKind.Like where
-  default := .unaryApp (.like default) default
+/-- Intermediate proto-parsing state for a `Like` message.
+    The `Like` proto has three fields — expr, pattern, delim — which can
+    arrive in any order.  We accumulate raw values (including a possible
+    `multiStar`) and convert to `.unaryApp (.like ...) _` or
+    `.unaryApp (.likeDelimited ...) _` when the outer `ExprKind.mergeLike`
+    runs.  RFC #115. -/
+structure ExprKind.Like where
+  expr    : Expr := default
+  pattern : List PatElem.RawPatElem := []
+  delim   : Option Char := none
+deriving Inhabited
 
 def ExprKind.Is := ExprKind
 instance : Inhabited ExprKind.Is where
@@ -617,21 +672,36 @@ namespace Proto.ExprKind.Like
 
 @[inline]
 def mergeExpr (result : ExprKind.Like) (e2 : Expr) : ExprKind.Like :=
-  match result with
-  | .unaryApp (.like pat) e1 => .unaryApp (.like pat) (Expr.merge e1 e2)
-  | _                        => panic!("Expected ExprKind.Like to have constructor .unaryApp .like")
+  { result with expr := Expr.merge result.expr e2 }
 
 @[inline]
-def mergePattern (result : ExprKind.Like) (pat2 : Repeated PatElem) : ExprKind.Like :=
-  match result with
-  | .unaryApp (.like pat1) e => .unaryApp (.like (Field.merge pat1 pat2.toList)) e
-  | _                        => panic!("Expected ExprKind.Like to have constructor .unaryApp .like")
+def mergePattern (result : ExprKind.Like) (pat2 : Repeated PatElem.RawPatElem) : ExprKind.Like :=
+  { result with pattern := result.pattern ++ pat2.toList }
+
+@[inline]
+def mergeDelim (result : ExprKind.Like) (s : String) : ExprKind.Like :=
+  match s.toList with
+  | [c] => { result with delim := .some c }
+  | _   => panic!("Expected `delim` in `like(pattern, delim)` to be exactly one character")
 
 @[inline]
 def merge (x1 x2 : ExprKind.Like) : ExprKind.Like :=
-  match x1, x2 with
-  | .unaryApp (.like p1) e1, .unaryApp (.like p2) e2 => .unaryApp (.like (Field.merge p1 p2)) (Expr.merge e1 e2)
-  | _, _                                             => panic!("Expected ExprKind.Like to have constructor .unaryApp .like")
+  { expr    := Expr.merge x1.expr x2.expr,
+    pattern := x1.pattern ++ x2.pattern,
+    -- If both sides have a delim, the later (x2) wins — matches proto scalar merge.
+    delim   := x2.delim.orElse fun () => x1.delim }
+
+/-- Finalize a fully-merged `Like` proto message to the corresponding `Expr` unary app. -/
+def toExpr (m : ExprKind.Like) : Expr :=
+  match m.delim with
+  | .none =>
+    -- Undelimited `like`: pattern must not contain `multiStar`.
+    let p : Pattern := m.pattern.map PatElem.RawPatElem.toPatElem
+    .unaryApp (.like p) m.expr
+  | .some d =>
+    -- Delimiter-aware `like(pattern, delim)` — RFC #115.
+    let p : DelimPattern := m.pattern.map PatElem.RawPatElem.toDelimPatElem
+    .unaryApp (.likeDelimited p d) m.expr
 
 -- parseField relies on mutual recursion and can be found at the end of the file
 end Proto.ExprKind.Like
@@ -762,10 +832,13 @@ def mergeExtHasAttr (result : ExprKind) (x : ExprKind.ExtHasAttr) : ExprKind :=
   | _                 => x
 
 @[inline]
-def mergeLike (result : ExprKind) (x : ExprKind.Like) : ExprKind :=
-  match result with
-  | .unaryApp (.like _) _ => ExprKind.Like.merge result x
-  | _                     => x
+def mergeLike (_ : ExprKind) (x : ExprKind.Like) : ExprKind :=
+  -- The `Like` proto message is parsed in one go into an `ExprKind.Like`
+  -- struct (accumulating expr / pattern / delim across nested fields), so
+  -- we just finalize.  If the containing `ExprKind` field was already set
+  -- to some other variant, proto scalar-merge semantics say "later wins" —
+  -- ignore the previous state and use this one.  RFC #115.
+  x.toExpr
 
 @[inline]
 def mergeIs (result : ExprKind) (x : ExprKind.Is) : ExprKind :=
@@ -927,8 +1000,12 @@ partial def Proto.ExprKind.Like.parseField (t : Proto.Tag) : BParsec (MergeFn Pr
     let x : Expr ← Field.guardedParse t
     pureMergeFn (Proto.ExprKind.Like.mergeExpr · x)
   | 2 =>
-    let x : Repeated PatElem ← Field.guardedParse t
+    let x : Repeated PatElem.RawPatElem ← Field.guardedParse t
     pureMergeFn (Proto.ExprKind.Like.mergePattern · x)
+  | 3 =>
+    -- RFC #115: optional `delim` field.
+    let x : String ← Field.guardedParse t
+    pureMergeFn (Proto.ExprKind.Like.mergeDelim · x)
   | _ =>
     t.wireType.skip
     pure ignore
