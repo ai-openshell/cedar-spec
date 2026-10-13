@@ -19,6 +19,7 @@ import UnitTest.CedarProto
 import UnitTest.Datetime
 import UnitTest.Decimal
 import UnitTest.IPAddr
+import UnitTest.IPAddrGrammar
 import UnitTest.Proto
 import UnitTest.Wildcard
 import UnitTest.WildcardDelimited
@@ -32,6 +33,7 @@ def tests :=
   Datetime.tests ++
   Decimal.tests ++
   IPAddr.tests ++
+  IPAddrGrammar.tests ++
   Wildcard.tests ++
   WildcardDelimited.tests ++
   Proto.tests ++
