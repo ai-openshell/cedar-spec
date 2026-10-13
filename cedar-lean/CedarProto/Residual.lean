@@ -36,6 +36,7 @@ open _root_.Proto
 inductive ResidualKind where
   | val | var | ite | and | or | unaryApp | binaryApp
   | getAttr | hasAttr | extHasAttr | set | record | call | error | like | is
+  | likeDelimited
 deriving Inhabited, Repr
 
 namespace ResidualKind
@@ -57,6 +58,7 @@ def fromInt : Int → Except String ResidualKind
   | 13 => .ok .error
   | 14 => .ok .like
   | 15 => .ok .is
+  | 16 => .ok .likeDelimited
   | n  => .error s!"Field {n} does not exist in Residual.Kind"
 
 instance : ProtoEnum ResidualKind := { fromInt := fromInt }
@@ -75,8 +77,9 @@ structure ProtoResidual where
   unaryOp    : Proto.ExprKind.UnaryApp.Op := .not
   binaryOp   : Proto.ExprKind.BinaryApp.Op := .eq
   fnName     : Option Spec.Proto.Name := none
-  pattern    : Pattern := []
+  pattern    : List Spec.PatElem.RawPatElem := []
   entityType : Option EntityType := none
+  delim      : Option Char := none
 
 instance : Inhabited ProtoResidual where
   default := {}
@@ -99,7 +102,8 @@ def merge (r₁ r₂ : ProtoResidual) : ProtoResidual :=
     binaryOp   := r₂.binaryOp
     fnName     := r₂.fnName.orElse (λ _ => r₁.fnName)
     pattern    := r₁.pattern ++ r₂.pattern
-    entityType := r₂.entityType.orElse (λ _ => r₁.entityType) }
+    entityType := r₂.entityType.orElse (λ _ => r₁.entityType)
+    delim      := r₂.delim.orElse (λ _ => r₁.delim) }
 
 partial def parseField (t : _root_.Proto.Tag) : BParsec (MergeFn ProtoResidual) := do
   have : Message ProtoResidual := ⟨parseField, merge⟩
@@ -140,11 +144,16 @@ partial def parseField (t : _root_.Proto.Tag) : BParsec (MergeFn ProtoResidual) 
     let x : Spec.Proto.Name ← Field.guardedParse t
     pureMergeFn (λ r => { r with fnName := some x })
   | 12 =>
-    let x : Pattern ← Field.guardedParse t
-    pureMergeFn (λ r => { r with pattern := r.pattern ++ x })
+    let x : Repeated Spec.PatElem.RawPatElem ← Field.guardedParse t
+    pureMergeFn (λ r => { r with pattern := r.pattern ++ x.toList })
   | 13 =>
     let x : EntityType ← Field.guardedParse t
     pureMergeFn (λ r => { r with entityType := some x })
+  | 14 =>
+    let x : String ← Field.guardedParse t
+    pureMergeFn (λ r => match x.toList with
+      | [c] => { r with delim := .some c }
+      | _   => panic!("Residual: `delim` must be a single character"))
   | _ =>
     t.wireType.skip
     pure ignore
@@ -231,7 +240,14 @@ partial def toResidual (r : ProtoResidual) : Except String Residual := do
     match r.attrs with
     | [] => .error "Residual: EXT_HAS_ATTR with empty `attrs`"
     | hd :: tl => .ok (.extHasAttr a hd tl ty)
-  | .like, [a] => .ok (.unaryApp (.like r.pattern) a ty)
+  | .like, [a] =>
+    let pat : Cedar.Spec.Pattern := r.pattern.map Spec.PatElem.RawPatElem.toPatElem
+    .ok (.unaryApp (.like pat) a ty)
+  | .likeDelimited, [a] => do
+    let some d := r.delim | .error "Residual: LIKE_DELIMITED without `delim`"
+    let pat : Cedar.Spec.DelimPattern :=
+      r.pattern.map Spec.PatElem.RawPatElem.toDelimPatElem
+    .ok (.unaryApp (.likeDelimited pat d) a ty)
   | .is, [a] => do
     let some ety := r.entityType | .error "Residual: IS without `entity_type`"
     .ok (.unaryApp (.is ety) a ty)
@@ -247,7 +263,8 @@ partial def toResidual (r : ProtoResidual) : Except String Residual := do
   -- Wrong number of children for the kind; `arity` produces the message.
   | .ite, _ => do arity 3; .error "unreachable"
   | .and, _ | .or, _ | .binaryApp, _ => do arity 2; .error "unreachable"
-  | .unaryApp, _ | .getAttr, _ | .hasAttr, _ | .extHasAttr, _ | .like, _ | .is, _ => do
+  | .unaryApp, _ | .getAttr, _ | .hasAttr, _ | .extHasAttr, _ | .like, _
+  | .likeDelimited, _ | .is, _ => do
     arity 1; .error "unreachable"
 
 end ProtoResidual

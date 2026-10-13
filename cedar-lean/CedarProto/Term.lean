@@ -211,6 +211,7 @@ end BaseOp
 inductive PatElem where
   | star
   | char : Char -> PatElem
+  | multiStar
 deriving Repr, Inhabited
 
 namespace PatElem
@@ -219,6 +220,7 @@ namespace PatElem
     match elem₁, elem₂ with
     | .star, .star => .star
     | .char _, .char c₂ => .char c₂
+    | .multiStar, .multiStar => .multiStar
     | _, _ => elem₂
 
   def parseField (t : Tag) : BParsec (MergeFn PatElem) := do
@@ -229,6 +231,9 @@ namespace PatElem
     | 2 =>
       let x : UInt32 ← Field.guardedParse t
       pureMergeFn (merge · (.char (Char.ofNat x.toNat)))
+    | 3 =>
+      let _x : Bool ← Field.guardedParse t
+      pureMergeFn (merge · .multiStar)
     | _ => t.wireType.skip ; pure ignore
 
   instance : Message PatElem := {
@@ -240,6 +245,13 @@ namespace PatElem
     match elem with
     | .star => .star
     | .char c => .justChar c
+    | .multiStar => panic!("PatElem.multiStar is only valid in `string.likeExtended`")
+
+  def toCedarDelim (elem : PatElem) : Cedar.Spec.DelimPatElem :=
+    match elem with
+    | .star => .star
+    | .char c => .justChar c
+    | .multiStar => .multiStar
 end PatElem
 
 abbrev Pattern := List PatElem
@@ -264,6 +276,43 @@ namespace Pattern
   def toCedar (p : Pattern) : Cedar.Spec.Pattern := p.map PatElem.toCedar
 end Pattern
 
+structure DelimPattern where
+  pattern : List PatElem := []
+  delim   : Option Char := none
+deriving Repr, Inhabited
+
+namespace DelimPattern
+  @[inline]
+  def merge (p₁ p₂ : DelimPattern) : DelimPattern :=
+    { pattern := p₁.pattern ++ p₂.pattern,
+      delim   := p₂.delim.orElse fun () => p₁.delim }
+
+  def parseField (t : Tag) : BParsec (MergeFn DelimPattern) := do
+    have : Field (List PatElem) :=
+      Field.fromInterField (λ (elems : Repeated PatElem) => elems.toList) (· ++ ·)
+    match t.fieldNum with
+    | 1 =>
+      let x : List PatElem ← Field.guardedParse t
+      pureMergeFn (λ dp => { dp with pattern := dp.pattern ++ x })
+    | 2 =>
+      let s : String ← Field.guardedParse t
+      pureMergeFn (λ dp =>
+        match s.toList with
+        | [c] => { dp with delim := .some c }
+        | _   => panic!("`DelimPattern.delim` must be a single character"))
+    | _ => t.wireType.skip ; pure ignore
+
+  instance : Message DelimPattern := {
+    parseField := parseField
+    merge := merge
+  }
+
+  def toCedar (dp : DelimPattern) : Cedar.Spec.DelimPattern × Char :=
+    match dp.delim with
+    | .some d => (dp.pattern.map PatElem.toCedarDelim, d)
+    | .none   => panic!("`DelimPattern.delim` field missing")
+end DelimPattern
+
 inductive Op where
   | base : BaseOp -> Op
   | uuf : UUF -> Op
@@ -271,6 +320,7 @@ inductive Op where
   | record.get : String -> Op
   | string.like : Pattern -> Op
   | ext : ExtOp -> Op
+  | string.likeExtended : DelimPattern -> Op
 deriving Repr, Inhabited
 
 namespace Op
@@ -282,6 +332,8 @@ namespace Op
     | .zero_extend _, .zero_extend n => .zero_extend n
     | Op.record.get s, Op.record.get t => Op.record.get (Field.merge s t)
     | Op.string.like p₁, Op.string.like p₂ => Op.string.like (Field.merge p₁ p₂)
+    | Op.string.likeExtended d₁, Op.string.likeExtended d₂ =>
+      Op.string.likeExtended (Field.merge d₁ d₂)
     | .ext xop₁, .ext xop₂ => .ext (Field.merge xop₁ xop₂)
     | _, _ => op₂
 
@@ -305,6 +357,9 @@ namespace Op
     | 6 =>
       let x : ExtOp ← Field.guardedParse t
       pureMergeFn (merge · (.ext x))
+    | 7 =>
+      let x : DelimPattern ← Field.guardedParse t
+      pureMergeFn (merge · (Op.string.likeExtended x))
     | _ => t.wireType.skip ; pure ignore
 
   instance : Message Op := {
@@ -319,6 +374,9 @@ namespace Op
     | .zero_extend n => .zero_extend n
     | Op.record.get attr => Cedar.SymCC.Op.record.get attr
     | Op.string.like p => Cedar.SymCC.Op.string.like p.toCedar
+    | Op.string.likeExtended dp =>
+      let (p, d) := dp.toCedar
+      Cedar.SymCC.Op.string.likeExtended p d
     | .ext xop => .ext xop.toCedar
 end Op
 

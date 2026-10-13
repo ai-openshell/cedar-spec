@@ -21,6 +21,7 @@ import UnitTest.Decimal
 import UnitTest.IPAddr
 import UnitTest.Proto
 import UnitTest.Wildcard
+import UnitTest.WildcardDelimited
 import UnitTest.TPE
 import UnitTest.Levels
 
@@ -32,6 +33,7 @@ def tests :=
   Decimal.tests ++
   IPAddr.tests ++
   Wildcard.tests ++
+  WildcardDelimited.tests ++
   Proto.tests ++
   CedarProto.tests ++
   TPE.tests ++
